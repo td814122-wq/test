@@ -1,25 +1,8 @@
--- [[ Rscripts Risk Notice ]]
--- This script is not verified by rscripts.net. Deal with caution.
---
--- Stay safe:
---   • Never log in on unofficial Roblox sites or lookalike domains.
---   • Real Roblox links use roblox.com (check the .com ending).
---   • Treat fake Roblox login / "claim reward" pages as phishing.
--- [[ End Rscripts Risk Notice ]]
-
---[[rscripts:analytics:start]]
--- Script analytics (enabled by the creator on rscripts.net).
--- Runs in its own thread and cannot affect the script below.
 task.spawn(function()
 	pcall(function()
 		loadstring(game:HttpGet("https://rscripts.net/api/telemetry/v2/client.lua?s=6ada2740da1192654ca4c0fa"))()
 	end)
 end)
---[[rscripts:analytics:end]]
-
--- Urban Reload | AimBot + ESP + No Recoil
--- Executor: Synapse X / KRNL / Fluxus
--- Game: https://www.roblox.com/games/84448037861644/Urban-Reload
 
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
@@ -27,9 +10,6 @@ local UserInputService  = game:GetService("UserInputService")
 local Camera            = workspace.CurrentCamera
 local LocalPlayer       = Players.LocalPlayer
 
--- ================================================
---  SETTINGS
--- ================================================
 local Settings = {
     AimbotEnabled     = true,
     AimbotKey         = Enum.UserInputType.MouseButton2,
@@ -49,56 +29,52 @@ local Settings = {
     NoRecoilEnabled   = true,
 }
 
--- ================================================
---  NO RECOIL (Undetectable - Gradual Reduction)
--- ================================================
 local Weapons     = game:GetService("ReplicatedStorage"):WaitForChild("Weapons")
 local ClientState = require(Weapons:WaitForChild("ClientState"))
 local Config      = require(Weapons:WaitForChild("Config"))
 
--- Store original values for stealthy modification
-local originalRecoilPitch = 0
-local originalRecoilYaw = 0
-local originalSpread = 0
+local oldIndex, oldNewIndex
+oldIndex = hookmetamethod(game, "__index", function(self, key)
+    if self == ClientState then
+        if Settings.NoRecoilEnabled then
+            if key == "RecoilPitch" or key == "RecoilYaw" then
+                return 0
+            elseif key == "Spread" or key == "SpreadRest" then
+                return 0
+            elseif key == "SpreadMultiplier" then
+                return 0
+            end
+        end
+    end
+    return oldIndex(self, key)
+end)
 
--- Gradual reduction factors (not instant 0)
-local recoilReductionFactor = 0.95  -- Reduces recoil by 95% instead of 100%
-local spreadReductionFactor = 0.90  -- Reduces spread by 90%
-
--- Apply initial bloom reduction (less obvious than 0)
-pcall(function() 
-    Config.Global.BloomScale = 0.05  -- Tiny bloom instead of 0
+oldNewIndex = hookmetamethod(game, "__newindex", function(self, key, value)
+    if self == ClientState and Settings.NoRecoilEnabled then
+        if key == "RecoilPitch" or key == "RecoilYaw" then
+            return oldNewIndex(self, key, 0)
+        elseif key == "Spread" or key == "SpreadRest" then
+            return oldNewIndex(self, key, 0)
+        elseif key == "SpreadMultiplier" then
+            return oldNewIndex(self, key, 0)
+        end
+    end
+    return oldNewIndex(self, key, value)
 end)
 
 RunService:BindToRenderStep("NoRecoil", Enum.RenderPriority.Camera.Value - 1, function()
-    if not Settings.NoRecoilEnabled then 
-        -- Restore natural recoil when disabled
-        return 
-    end
+    if not Settings.NoRecoilEnabled then return end
     
-    -- Store current values before modification
-    originalRecoilPitch = ClientState.RecoilPitch
-    originalRecoilYaw = ClientState.RecoilYaw
-    originalSpread = ClientState.Spread
-    
-    -- Gradual reduction instead of instant 0 (more natural, less detectable)
-    ClientState.RecoilPitch = ClientState.RecoilPitch * (1 - recoilReductionFactor)
-    ClientState.RecoilYaw = ClientState.RecoilYaw * (1 - recoilReductionFactor)
-    
-    -- Smooth spread reduction
-    ClientState.Spread = ClientState.Spread * (1 - spreadReductionFactor)
-    ClientState.SpreadRest = ClientState.SpreadRest * (1 - spreadReductionFactor)
-    ClientState.SpreadMultiplier = math.max(ClientState.SpreadMultiplier * 0.1, 0.01)
-    
-    -- Keep bloom low but not 0
-    pcall(function() 
-        Config.Global.BloomScale = math.max(Config.Global.BloomScale * 0.1, 0.05)
+    pcall(function()
+        ClientState.RecoilPitch = 0
+        ClientState.RecoilYaw = 0
+        ClientState.Spread = 0
+        ClientState.SpreadRest = 0
+        ClientState.SpreadMultiplier = 0
+        Config.Global.BloomScale = 0
     end)
 end)
 
--- ================================================
---  UTILITIES
--- ================================================
 local function GetCharacter(player)
     return player and player.Character
 end
@@ -132,9 +108,6 @@ local function IsEnemy(player)
     return true
 end
 
--- ================================================
---  FOV CIRCLE
--- ================================================
 local FOVCircle         = Drawing.new("Circle")
 FOVCircle.Visible       = true
 FOVCircle.Radius        = Settings.AimbotFOV
@@ -143,9 +116,6 @@ FOVCircle.Thickness     = 1
 FOVCircle.Filled        = false
 FOVCircle.NumSides      = 64
 
--- ================================================
---  CLOSEST ENEMY IN FOV
--- ================================================
 local function GetClosestEnemy()
     local center      = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     local closest     = nil
@@ -169,83 +139,71 @@ local function GetClosestEnemy()
     return closest
 end
 
--- ================================================
---  AIMBOT (Fixed Smoothing)
--- ================================================
-local aimbotVelocity = Vector3.new(0, 0, 0)
-local lastAimbotTime = tick()
+local currentTarget = nil
+local lockStartTime = 0
 
 RunService:BindToRenderStep("Aimbot", Enum.RenderPriority.Camera.Value + 1, function()
-    FOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-    FOVCircle.Radius   = Settings.AimbotFOV
+    local centerScreen = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    FOVCircle.Position = centerScreen
+    FOVCircle.Radius = Settings.AimbotFOV
 
     if not Settings.AimbotEnabled then 
-        aimbotVelocity = Vector3.new(0, 0, 0)
+        currentTarget = nil
         return 
     end
     
     if not UserInputService:IsMouseButtonPressed(Settings.AimbotKey) then 
-        aimbotVelocity = Vector3.new(0, 0, 0)
+        currentTarget = nil
         return 
     end
 
     local target = GetClosestEnemy()
     if not target then 
-        aimbotVelocity = Vector3.new(0, 0, 0)
+        currentTarget = nil
         return 
+    end
+    
+    if currentTarget ~= target then
+        currentTarget = target
+        lockStartTime = tick()
     end
     
     local bone = GetBone(target, Settings.AimbotBone)
     if not bone then 
-        aimbotVelocity = Vector3.new(0, 0, 0)
+        currentTarget = nil
         return 
     end
 
-    -- Calculate delta time for frame-independent smoothing
-    local now = tick()
-    local deltaTime = math.min(now - lastAimbotTime, 0.1)
-    lastAimbotTime = now
-
-    -- Get direction to target
-    local currentPos = Camera.CFrame.Position
-    local targetPos = bone.Position
+    local camCFrame = Camera.CFrame
+    local camPos = camCFrame.Position
     
-    -- Predict target movement if bone has velocity
+    local targetPos = bone.Position
     if bone:IsA("BasePart") then
         local velocity = bone.AssemblyLinearVelocity or bone.Velocity or Vector3.new(0, 0, 0)
-        targetPos = targetPos + (velocity * 0.1)
+        local distance = (camPos - targetPos).Magnitude
+        local timeToReach = distance / 1000
+        targetPos = targetPos + (velocity * timeToReach * 0.5)
     end
+    local targetCFrame = CFrame.new(camPos, targetPos)
+    local smoothValue = Settings.AimbotSmoothing
     
-    local direction = (targetPos - currentPos).Unit
-    local currentLook = Camera.CFrame.LookVector
-    
-    -- Calculate angle difference
-    local angle = math.acos(math.clamp(currentLook:Dot(direction), -1, 1))
-    
-    -- Smooth interpolation with physics-based approach
-    local smoothFactor = Settings.AimbotSmoothing
-    if smoothFactor == 0 then
-        -- Instant lock
-        Camera.CFrame = CFrame.new(currentPos, targetPos)
+    if smoothValue <= 0.01 then
+        Camera.CFrame = targetCFrame
     else
-        -- Convert smoothing value (0-1) to appropriate speed
-        -- Lower smoothing = faster aim, higher = slower
-        local aimSpeed = (1 - smoothFactor) * 20 + 1
+        local smoothSpeed = 1 - smoothValue
+        local currentLook = camCFrame.LookVector
+        local targetLook = (targetPos - camPos).Unit
+        local dot = currentLook:Dot(targetLook)
+        local angle = math.acos(math.clamp(dot, -1, 1))
+        local baseAlpha = 0.05 + (smoothSpeed * 0.3)
+        local angleMultiplier = math.clamp(angle / math.pi, 0.1, 1)
+        local finalAlpha = baseAlpha * (1 + angleMultiplier * 2)
         
-        -- Calculate the rotation speed based on angle and smoothing
-        local rotationSpeed = math.min(angle * aimSpeed * deltaTime, angle)
-        
-        -- Apply smooth rotation
-        local targetCF = CFrame.new(currentPos, targetPos)
-        local slerpedCF = Camera.CFrame:Lerp(targetCF, math.clamp(rotationSpeed / angle, 0, 1))
-        
-        Camera.CFrame = slerpedCF
+
+        Camera.CFrame = camCFrame:Lerp(targetCFrame, math.min(finalAlpha, 1))
     end
 end)
 
--- ================================================
---  ESP POOL
--- ================================================
 local ESPObjects = {}
 
 local function MakeESP(player)
@@ -303,9 +261,6 @@ end
 Players.PlayerAdded:Connect(MakeESP)
 Players.PlayerRemoving:Connect(RemoveESP)
 
--- ================================================
---  ESP UPDATE
--- ================================================
 RunService:BindToRenderStep("ESP", Enum.RenderPriority.Camera.Value - 2, function()
     for player, obj in pairs(ESPObjects) do
         local visible = Settings.ESPEnabled and IsEnemy(player) and IsAlive(player)
@@ -371,9 +326,6 @@ RunService:BindToRenderStep("ESP", Enum.RenderPriority.Camera.Value - 2, functio
     end
 end)
 
--- ================================================
---  RAYFIELD UI
--- ================================================
 local Rayfield = loadstring(game:HttpGet(
     "https://sirius.menu/rayfield"
 ))()
@@ -381,12 +333,11 @@ local Rayfield = loadstring(game:HttpGet(
 local Window = Rayfield:CreateWindow({
     Name                = "Urban Reload",
     LoadingTitle        = "Urban Reload",
-    LoadingSubtitle     = "by null",
+    LoadingSubtitle     = "",
     ConfigurationSaving = { Enabled = false },
     KeySystem           = false,
 })
 
--- ── AIMBOT TAB ──────────────────────────────────
 local AimbotTab = Window:CreateTab("Aimbot", 4483362458)
 
 AimbotTab:CreateToggle({
@@ -427,7 +378,6 @@ AimbotTab:CreateDropdown({
     Callback      = function(v) Settings.AimbotBone = v[1] end,
 })
 
--- ── ESP TAB ─────────────────────────────────────
 local ESPTab = Window:CreateTab("ESP", 4483362458)
 
 ESPTab:CreateToggle({
@@ -460,7 +410,6 @@ ESPTab:CreateSlider({
     Callback     = function(v) Settings.ESPMaxDist = v end,
 })
 
--- ── MISC TAB ────────────────────────────────────
 local MiscTab = Window:CreateTab("Misc", 4483362458)
 
 MiscTab:CreateToggle({
